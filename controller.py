@@ -5,18 +5,23 @@ Rôle : Agréger capteurs, appliquer règles métier, piloter actionneurs
 import paho.mqtt.client as mqtt
 import json
 import logging
+import os
 from datetime import datetime
 from config import BROKER_HOST, BROKER_PORT, BROKER_KEEPALIVE
 from config import TOPICS, THRESHOLDS
+from config import DAY_START_HOUR, DAY_END_HOUR
 
 # ============================================================
 # CONFIGURATION DU LOGGING (UTF-8)
 # ============================================================
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "greenhouse.log")
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.FileHandler('logs/greenhouse.log', encoding='utf-8'),
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -47,6 +52,8 @@ class GreenhouseController:
         self.client.on_message = self.on_message
 
         logging.info('🧠 Contrôleur initialisé')
+        # State to avoid repeated temperature alerts
+        self.temperature_alert_sent = False
     # ============================================================
     # CALLBACKS MQTT
     # ============================================================
@@ -81,7 +88,7 @@ class GreenhouseController:
             logging.info(f'🌡️ Température sol: {self.sensor_data["temp_soil"]}°C')
         elif 'humidity' in topic:
             self.sensor_data['humidity'] = float(f"{data['value']:.1f}")
-            logging.info(f' Humidité: {self.sensor_data["humidity"]}%')
+            logging.info(f'💧 Humidité: {self.sensor_data["humidity"]}%')
         elif 'light' in topic:
             self.sensor_data['light'] = float(f"{data['value']:.0f}")
             logging.info(f'☀️ Luminosité: {self.sensor_data["light"]} lux')
@@ -92,9 +99,9 @@ class GreenhouseController:
         # Appliquer règles après chaque réception
         self.apply_rules()
 
-         # ============================================================
-        # RÈGLES MÉTIER
-        # ============================================================
+    # ============================================================
+    # RÈGLES MÉTIER
+    # ============================================================
     def apply_rules(self):
         self.check_irrigation()
         self.check_lighting()
@@ -117,25 +124,71 @@ class GreenhouseController:
 
 
     def check_lighting(self):
-            light = self.sensor_data.get('light')
-            if light is None:
-                return
+        light = self.sensor_data.get('light')
+        if light is None:
+            return
 
-            current_hour = datetime.now().hour
-            is_daytime = 8 <= current_hour < 18
-            should_light = light < THRESHOLDS['light_low'] and is_daytime
-            desired_state = 'ON' if should_light else 'OFF'
+        current_hour = datetime.now().hour
+        is_daytime = DAY_START_HOUR <= current_hour < DAY_END_HOUR
+        should_light = light < THRESHOLDS['light_low'] and is_daytime
+        desired_state = 'ON' if should_light else 'OFF'
 
-            if desired_state != self.actuator_states['lighting']:
-                self.send_command('lighting', desired_state)
-                if desired_state == 'ON':
-                    logging.warning(f'💡 Éclairage activé: Luminosité={light} lux < {THRESHOLDS["light_low"]} lux')
-                else:
-                    logging.info('🌑 Éclairage désactivé')
+        if desired_state != self.actuator_states['lighting']:
+            self.send_command('lighting', desired_state)
+            if desired_state == 'ON':
+                logging.warning(f'💡 Éclairage activé: Luminosité={light} lux < {THRESHOLDS["light_low"]} lux')
+            else:
+                logging.info('🌑 Éclairage désactivé')
 
-            # ============================================================
-        # ACTIONNEURS
-        # ============================================================
+    def check_temperature_alert(self):
+        """Check for critical soil temperature and publish an alert once.
+
+        Sends an alert message to the ALERTS topic when the soil temperature
+        reaches or exceeds the critical threshold, and sends a recovery
+        message when it drops back below the threshold. Uses a simple
+        latching flag to avoid spamming the alert topic.
+        """
+        temp = self.sensor_data.get('temp_soil')
+        if temp is None:
+            return
+
+        critical = THRESHOLDS.get('temp_critical')
+        if critical is None:
+            return
+
+        # If temperature is critical and we haven't alerted yet -> alert
+        if temp >= critical and not self.temperature_alert_sent:
+            alert = {
+                'type': 'temperature_critical',
+                'value': temp,
+                'threshold': critical,
+                'timestamp': datetime.now().isoformat()
+            }
+            try:
+                self.client.publish(TOPICS['alerts'], json.dumps(alert), qos=1)
+                logging.critical(f'🔥 Température critique: {temp}°C >= {critical}°C — alerte envoyée')
+            except Exception as e:
+                logging.error(f'Erreur envoi alerte température: {e}')
+            self.temperature_alert_sent = True
+
+        # If temperature has recovered and we had sent an alert before -> recover
+        if temp < critical and self.temperature_alert_sent:
+            recover = {
+                'type': 'temperature_recovered',
+                'value': temp,
+                'threshold': critical,
+                'timestamp': datetime.now().isoformat()
+            }
+            try:
+                self.client.publish(TOPICS['alerts'], json.dumps(recover), qos=1)
+                logging.info(f'✅ Température revenue à la normale: {temp}°C < {critical}°C')
+            except Exception as e:
+                logging.error(f'Erreur envoi message récupération température: {e}')
+            self.temperature_alert_sent = False
+
+    # ============================================================
+    # ACTIONNEURS
+    # ============================================================
     def handle_actuator_state(self, topic, data):
         if 'irrigation' in topic:
             self.actuator_states['irrigation'] = data['state']
@@ -163,9 +216,9 @@ class GreenhouseController:
         logging.info(f'📤 Commande envoyée: {actuator} → {action}'  )    
             
 
-
-            # DÉMARRAGE
-        # ============================================================
+    # ============================================================
+    # DÉMARRAGE
+    # ============================================================
     def start(self):
         try:
             self.client.connect(BROKER_HOST, BROKER_PORT, BROKER_KEEPALIVE)

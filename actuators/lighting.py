@@ -11,13 +11,6 @@ Objectif :
 """
 
 # ==========================================================
-# PERMETTRE IMPORT DU DOSSIER PARENT (greenhouse/)
-# ==========================================================
-
-import sys
-sys.path.append('..')  # ajoute le dossier parent au PYTHONPATH
-
-# ==========================================================
 # IMPORTS
 # ==========================================================
 
@@ -140,7 +133,10 @@ def main():
     Initialise le client MQTT et démarre l'écoute.
     """
 
-    client = mqtt.Client(client_id="LIGHTING_01")
+    client = mqtt.Client(
+        client_id="LIGHTING_01",
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION1
+    )
 
     client.on_connect = on_connect
     client.on_message = on_message

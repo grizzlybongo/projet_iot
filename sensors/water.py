@@ -1,25 +1,5 @@
-import random
-import os
-import importlib.util
-
-try:
-    from .base_sensor import BaseSensor
-    from ..config import TOPICS, SENSOR_INTERVALS, SENSOR_RANGES
-except Exception:
-    project_root = os.path.dirname(os.path.dirname(__file__))
-    config_path = os.path.join(project_root, "config.py")
-    spec = importlib.util.spec_from_file_location("local_config", config_path)
-    cfg = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(cfg)
-    TOPICS = cfg.TOPICS
-    SENSOR_INTERVALS = cfg.SENSOR_INTERVALS
-    SENSOR_RANGES = cfg.SENSOR_RANGES
-
-    base_path = os.path.join(os.path.dirname(__file__), "base_sensor.py")
-    spec2 = importlib.util.spec_from_file_location("base_sensor", base_path)
-    bs = importlib.util.module_from_spec(spec2)
-    spec2.loader.exec_module(bs)
-    BaseSensor = bs.BaseSensor
+from config import TOPICS, SENSOR_INTERVALS, SENSOR_RANGES, SENSOR_STEPS
+from sensors.base_sensor import BaseSensor
 
 
 class WaterLevelSensor(BaseSensor):
@@ -32,7 +12,7 @@ class WaterLevelSensor(BaseSensor):
         self.min_val, self.max_val = SENSOR_RANGES["water"]
 
     def read_value(self):
-        return round(random.uniform(self.min_val, self.max_val), 1)
+        return self._next_value(self.min_val, self.max_val, SENSOR_STEPS["water"], 1)
 
     def get_unit(self):
         return "%"

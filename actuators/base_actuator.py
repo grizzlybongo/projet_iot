@@ -1,25 +1,8 @@
 import paho.mqtt.client as mqtt
 import json
 from datetime import datetime
-import os
-import importlib.util
 
-# Load configuration. Prefer package-relative import when running as part of the
-# installed/package context. If that fails (running the module directly, or a
-# conflicting installed package shadows the project), fall back to loading
-# config.py from the project root by path.
-try:
-    from ..config import BROKER_HOST, BROKER_PORT, BROKER_KEEPALIVE
-except Exception:
-    project_root = os.path.dirname(os.path.dirname(__file__))
-    config_path = os.path.join(project_root, "config.py")
-    spec = importlib.util.spec_from_file_location("local_config", config_path)
-    local_cfg = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(local_cfg)
-
-    BROKER_HOST = local_cfg.BROKER_HOST
-    BROKER_PORT = local_cfg.BROKER_PORT
-    BROKER_KEEPALIVE = local_cfg.BROKER_KEEPALIVE
+from config import BROKER_HOST, BROKER_PORT, BROKER_KEEPALIVE
 
 class BaseActuator:
     def __init__(self, actuator_id, topic_cmd, topic_state):
@@ -28,7 +11,10 @@ class BaseActuator:
         self.topic_state = topic_state
         self.state = 'OFF'
         
-        self.client = mqtt.Client(f'actuator_{actuator_id}')
+        self.client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
+            client_id=f'actuator_{actuator_id}'
+        )
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
         self.client.on_disconnect = self._on_disconnect
@@ -44,14 +30,33 @@ class BaseActuator:
     
     def _on_message(self, client, userdata, msg):
         try:
-            cmd = json.loads(msg.payload.decode())
-            action = cmd.get('action', '').upper()
-            
-            if action in ['ON', 'OFF']:
+            raw = msg.payload.decode().strip()
+            action = None
+
+            # Try parsing JSON first
+            try:
+                cmd = json.loads(raw)
+                if isinstance(cmd, dict):
+                    # Accept case-insensitive key 'action'
+                    for k, v in cmd.items():
+                        if k.lower() == 'action' and isinstance(v, str):
+                            action = v.strip().upper()
+                            break
+                else:
+                    # If JSON is not an object, treat it as a direct action string
+                    action = str(cmd).strip().upper()
+            except json.JSONDecodeError:
+                # Not JSON — allow plain payloads like 'ON' or 'OFF'
+                action = raw.upper()
+
+            if action in ('ON', 'OFF'):
                 self.state = action
                 print(f'[{self.actuator_id}] Commande: {action}')
                 self.execute_action(action)
                 self.publish_state()
+            else:
+                print(f'[{self.actuator_id}] ⚠️ Commande invalide (utiliser ON ou OFF) — reçu: {raw}')
+
         except Exception as e:
             print(f'[{self.actuator_id}] Erreur: {e}')
     

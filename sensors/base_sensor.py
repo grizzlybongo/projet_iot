@@ -2,35 +2,11 @@
 
 import json
 import time
+import random
 from datetime import datetime
 import paho.mqtt.client as mqtt
-import os
-import importlib.util
 
-# Load configuration. Prefer a package-relative import when running as an
-# installed/packaged project. If that fails (for example when running the
-# module directly during development, or when an unrelated site-package
-# shadows the project package name), load the `config.py` file from the
-# project root to avoid name collisions.
-try:
-    from ..config import (
-        BROKER_HOST,
-        BROKER_PORT,
-        BROKER_KEEPALIVE,
-        QOS_DEFAULT
-    )
-except Exception:
-    # Fallback: load config.py by path from project root
-    project_root = os.path.dirname(os.path.dirname(__file__))
-    config_path = os.path.join(project_root, "config.py")
-    spec = importlib.util.spec_from_file_location("local_config", config_path)
-    local_cfg = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(local_cfg)
-
-    BROKER_HOST = local_cfg.BROKER_HOST
-    BROKER_PORT = local_cfg.BROKER_PORT
-    BROKER_KEEPALIVE = local_cfg.BROKER_KEEPALIVE
-    QOS_DEFAULT = local_cfg.QOS_DEFAULT
+from config import BROKER_HOST, BROKER_PORT, BROKER_KEEPALIVE, QOS_DEFAULT
 
 
 class BaseSensor:
@@ -39,9 +15,14 @@ class BaseSensor:
         self.sensor_id = sensor_id
         self.topic = topic
         self.interval = interval
+        self.current = None
 
         # Client MQTT (compatible Paho v2)
-        self.client = mqtt.Client(client_id=f"sensor_{sensor_id}", protocol=mqtt.MQTTv311)
+        self.client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
+            client_id=f"sensor_{sensor_id}",
+            protocol=mqtt.MQTTv311
+        )
 
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
@@ -69,6 +50,19 @@ class BaseSensor:
     # ==========================================================
     # Méthodes à implémenter dans les sous-classes
     # ==========================================================
+
+    def _next_value(self, min_val, max_val, step, digits=None):
+        """Marche aléatoire : 1re valeur dans la plage, puis ±step autour de la précédente."""
+        if self.current is None:
+            value = random.uniform(min_val, max_val)
+        else:
+            value = self.current + random.uniform(-step, step)
+
+        value = max(min_val, min(max_val, value))
+        if digits is not None:
+            value = round(value, digits)
+        self.current = value
+        return self.current
 
     def read_value(self):
         raise NotImplementedError("read_value() doit être implémentée")
